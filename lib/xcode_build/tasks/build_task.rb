@@ -32,7 +32,11 @@ class ClangCompileDBFormatter
       elsif line.include?('/bin/clang')
         # 3. Finish by collecting actual command performed.
         @current_command["command"] = line
-        @collected[command_path(@current_command)] = @current_command
+        # 4. Update `file` value to full path, which is apperantly what
+        #    clang_complete needs.
+        #    TODO: Figure out if the spec shows it wrong or clang_complete does it wrong.
+        @current_command["file"] = command_path(@current_command)
+        @collected[@current_command["file"]] = @current_command
         @current_command = nil
       end
     end
