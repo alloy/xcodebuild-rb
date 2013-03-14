@@ -1,5 +1,55 @@
 require 'rake/tasklib'
 
+class ClangCompileDBFormatter
+  def initialize(output_path, output_stream)
+    require 'json'
+    require 'shellwords'
+
+    @output_path = output_path
+    @output_stream = output_stream
+    @collected = {}
+
+    if File.exist?(@output_path)
+      JSON.load(File.read(@output_path)).each do |command|
+        @collected[command_path(command)] = command
+      end
+    end
+  end
+
+  def <<(line)
+    @output_stream << line if @output_stream
+
+    line = line.strip
+    if line =~ /^CompileC/
+      # 1. Start by collecting relative source file path.
+      raise "Oh noes!" if @current_command
+      components = Shellwords.shellsplit(line)
+      @current_command = { "file" => components[2] }
+    elsif @current_command
+      if line =~ /^cd (.+)$/
+        # 2. Collect working dir for source file path.
+        @current_command["directory"] = $1
+      elsif line.include?('/bin/clang')
+        # 3. Finish by collecting actual command performed.
+        @current_command["command"] = line
+        @collected[command_path(@current_command)] = @current_command
+        @current_command = nil
+      end
+    end
+  end
+
+  def save
+    commands = @collected.sort_by { |full_path, _| full_path }.map { |_, command| command }
+    File.open(@output_path, 'w') { |f| f << JSON.pretty_generate(commands) }
+  end
+
+  private
+
+  def command_path(command)
+    File.join(*command.values_at("directory", "file"))
+  end
+end
+
 module XcodeBuild
   module Tasks
     class BuildTask < ::Rake::TaskLib
@@ -18,6 +68,7 @@ module XcodeBuild
       attr_accessor :invoke_from_within
       attr_accessor :reporter_klass
       attr_accessor :xcodebuild_log_path
+      attr_accessor :create_clang_compile_db
 
       def initialize(namespace = :xcode, &block)
         @namespace = namespace
@@ -26,6 +77,7 @@ module XcodeBuild
         @reporter_klass = XcodeBuild::Reporter
         @hooks = {}
         @build_settings = {}
+        @create_clang_compile_db = false
 
         yield self if block_given?
         define
@@ -105,6 +157,12 @@ module XcodeBuild
         reporter.direct_raw_output_to = output_to unless formatter
         reporter.direct_raw_output_to = File.open(xcodebuild_log_path, 'w') if xcodebuild_log_path
 
+        compile_db_formatter = nil
+        if create_clang_compile_db && [:build, :archive].include?(action)
+          compile_db_formatter = ClangCompileDBFormatter.new('compile_commands.json', reporter.output_stream)
+          reporter.direct_raw_output_to = compile_db_formatter
+        end
+
         reporter.report_running_action(action) if reporter.respond_to?(:report_running_action)
         
         case action
@@ -127,6 +185,8 @@ module XcodeBuild
           # sometimes, a build/archive can fail and xcodebuild won't return a non-zero code
           raise "xcodebuild failed (#{reporter.build.failed_steps.length} steps failed)"
         end
+
+        compile_db_formatter.save if compile_db_formatter
 
         case action
         when :build

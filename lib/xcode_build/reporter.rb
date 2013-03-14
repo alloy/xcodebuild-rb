@@ -6,7 +6,7 @@ module XcodeBuild
     include Reporting::BuildReporting
     include Reporting::CleanReporting
     
-    attr_accessor :delegate
+    attr_accessor :delegate, :output_stream
 
     def initialize(delegate = nil)
       @delegate = delegate
